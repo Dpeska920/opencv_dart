@@ -104,10 +104,11 @@ Map<String, String> _recordUseMapping(Uri gDir, Set<String> modules) {
 void main(List<String> args) async {
   await link(args, (input, output) async {
     final recorded = input.recordedUses;
-    final modules = UserDefineArgsParser(
+    final userArgs = UserDefineArgsParser(
       input.userDefines,
       targetOS: input.config.buildCodeAssets ? input.config.code.targetOS : null,
-    ).modules;
+    );
+    final modules = userArgs.modules;
     final gDir = input.packageRoot.resolve('lib/src/g/');
     final mapping = _recordUseMapping(gDir, modules);
     final finalizerSymbols = await _finalizerSymbols(gDir, modules);
@@ -135,20 +136,32 @@ void main(List<String> args) async {
     // On JIT builds (`dart run` / `dart test`) `recordedUses` is null, so the
     // list would contain only the finalizer symbols and clobber the good
     // AOT-derived list, breaking the next build's exports.
-    if (recorded != null) {
+    //
+    // The keep-list only has a purpose when `DARTCV_TREESHAKE` is on: it is the
+    // retain-list that dead-code elimination is measured against. Writing it
+    // while treeshaking is off still restricts the library's exports on the
+    // NEXT build (`DARTCV_KEEP_FILE` is honoured by CMake independently of
+    // `DARTCV_TREESHAKE`), which silently strips symbols the embedder never
+    // asked to have removed. Respect the opt-in.
+    if (recorded != null && userArgs.treeshake) {
       final keepFile = sharedDir.resolve('dartcv_keep.txt');
       File.fromUri(keepFile).createSync(recursive: true);
       File.fromUri(keepFile).writeAsStringSync(symbols.join('\n'));
     }
 
-    if (recorded != null) {
+    if (recorded == null) {
       stdout.writeln(
-        '[dartcv4] link: wrote ${symbols.length} native symbols '
-        '(${recorded.calls.length} recorded + ${finalizerSymbols.length} finalizer) to ${sharedDir.toFilePath()}dartcv_keep.txt',
+        '[dartcv4] link: no recorded uses (JIT build), keep-list left untouched',
+      );
+    } else if (!userArgs.treeshake) {
+      stdout.writeln(
+        '[dartcv4] link: treeshake is off, keep-list not written '
+        '(${symbols.length} symbols would have been kept)',
       );
     } else {
       stdout.writeln(
-        '[dartcv4] link: no recorded uses (JIT build), keep-list left untouched',
+        '[dartcv4] link: wrote ${symbols.length} native symbols '
+        '(${recorded.calls.length} recorded + ${finalizerSymbols.length} finalizer) to ${sharedDir.toFilePath()}dartcv_keep.txt',
       );
     }
   });
